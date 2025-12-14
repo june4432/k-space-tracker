@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Viewer, PointPrimitiveCollection, PointPrimitive, Entity, PolylineGraphics } from 'resium'
+import { Viewer, PointPrimitiveCollection, PointPrimitive, Entity, PolylineGraphics, EllipseGraphics } from 'resium'
 import { Cartesian3, Color } from 'cesium'
 import { useSatelliteData } from './hooks/useSatelliteData'
 import { calculatePosition, getOrbitTypeId, calculateOrbit, findNearbyObjects } from './utils/satelliteCalculations'
 import FilterPanel from './components/FilterPanel'
 import SatelliteInfo from './components/SatelliteInfo'
 import TimeController from './components/TimeController'
+import LaunchSimulator from './components/LaunchSimulator'
+import CleanupGame from './components/CleanupGame'
+import KesslerSimulation from './components/KesslerSimulation'
+import AsteroidTracker from './components/AsteroidTracker'
 
 function App() {
   const { satellites, loading, error, categories } = useSatelliteData()
@@ -25,6 +29,11 @@ function App() {
     HEO: true,
   })
   const [selectedSatellite, setSelectedSatellite] = useState(null)
+  const [showLaunchSimulator, setShowLaunchSimulator] = useState(false)
+  const [showCleanupGame, setShowCleanupGame] = useState(false)
+  const [showKessler, setShowKessler] = useState(false)
+  const [showAsteroid, setShowAsteroid] = useState(false)
+  const [launchedSatellites, setLaunchedSatellites] = useState([])
   const viewerRef = useRef(null)
 
   // 시뮬레이션 시간 상태
@@ -183,8 +192,28 @@ function App() {
       case 'debris_cosmos': return Color.GRAY
       case 'debris_iridium': return Color.DARKGRAY
       case 'debris_fengyun': return Color.SILVER
+      case 'launched': return Color.fromCssColorString('#667eea')  // 발사한 위성
       default: return Color.WHITE
     }
+  }
+
+  // 발사된 위성 처리
+  const handleLaunch = (launchedSat) => {
+    setLaunchedSatellites(prev => [...prev, {
+      ...launchedSat,
+      id: `launched-${Date.now()}`,
+      category: 'launched',
+    }])
+  }
+
+  // 발사된 위성 삭제
+  const handleDeleteLaunched = (satId) => {
+    setLaunchedSatellites(prev => prev.filter(s => s.id !== satId))
+  }
+
+  // 전체 삭제
+  const handleClearAllLaunched = () => {
+    setLaunchedSatellites([])
   }
 
   return (
@@ -258,6 +287,62 @@ function App() {
             </Entity>
           </>
         )}
+
+        {/* 발사된 위성들의 궤도 및 위치 시각화 */}
+        {launchedSatellites.map((sat) => {
+          // 원형 궤도 생성 (간단한 시각화)
+          const orbitPoints = []
+          for (let i = 0; i <= 360; i += 5) {
+            const rad = (i * Math.PI) / 180
+            // 경사각을 고려한 궤도 계산
+            const incRad = (sat.inclination * Math.PI) / 180
+            const lat = Math.asin(Math.sin(incRad) * Math.sin(rad)) * (180 / Math.PI)
+            const lng = (sat.launchSite.lng + i) % 360 - 180
+            orbitPoints.push(lng, lat, sat.altitude * 1000)
+          }
+
+          // 위성 현재 위치 계산 (발사 이후 시간 기반)
+          const timeSinceLaunch = (simulationTime - sat.launchedAt) / 1000 // 초
+          const orbitalPeriod = parseFloat(sat.orbitInfo.period) * 60 // 초
+          const angle = ((timeSinceLaunch / orbitalPeriod) * 360) % 360
+          const angleRad = (angle * Math.PI) / 180
+          const incRad = (sat.inclination * Math.PI) / 180
+          const satLat = Math.asin(Math.sin(incRad) * Math.sin(angleRad)) * (180 / Math.PI)
+          const satLng = (sat.launchSite.lng + angle) % 360 - 180
+
+          return (
+            <Entity key={sat.id}>
+              {/* 궤도 경로 */}
+              <PolylineGraphics
+                positions={Cartesian3.fromDegreesArrayHeights(orbitPoints)}
+                width={2}
+                material={Color.fromCssColorString('#667eea').withAlpha(0.6)}
+              />
+            </Entity>
+          )
+        })}
+
+        {/* 발사된 위성 포인트 (PointPrimitiveCollection 내부에 추가) */}
+        <PointPrimitiveCollection>
+          {launchedSatellites.map((sat) => {
+            const timeSinceLaunch = (simulationTime - sat.launchedAt) / 1000
+            const orbitalPeriod = parseFloat(sat.orbitInfo.period) * 60
+            const angle = ((timeSinceLaunch / orbitalPeriod) * 360) % 360
+            const angleRad = (angle * Math.PI) / 180
+            const incRad = (sat.inclination * Math.PI) / 180
+            const satLat = Math.asin(Math.sin(incRad) * Math.sin(angleRad)) * (180 / Math.PI)
+            const satLng = (sat.launchSite.lng + angle) % 360 - 180
+
+            return (
+              <PointPrimitive
+                key={sat.id}
+                position={Cartesian3.fromDegrees(satLng, satLat, sat.altitude * 1000)}
+                pixelSize={10}
+                color={Color.fromCssColorString('#667eea')}
+              />
+            )
+          })}
+        </PointPrimitiveCollection>
       </Viewer>
 
       <FilterPanel
@@ -307,6 +392,86 @@ function App() {
           onClose={() => setSelectedSatellite(null)}
           nearbyObjects={nearbyObjects}
         />
+      )}
+
+      {/* 액션 버튼들 */}
+      <div className="action-buttons">
+        <button
+          className="game-button"
+          onClick={() => setShowCleanupGame(true)}
+        >
+          🧹 쓰레기 청소
+        </button>
+        <button
+          className="launch-button"
+          onClick={() => setShowLaunchSimulator(true)}
+        >
+          🚀 위성 발사
+        </button>
+        <button
+          className="kessler-button"
+          onClick={() => setShowKessler(true)}
+        >
+          💥 케슬러 신드롬
+        </button>
+        <button
+          className="asteroid-button"
+          onClick={() => setShowAsteroid(true)}
+        >
+          ☄️ 소행성
+        </button>
+      </div>
+
+      {/* 발사된 위성 목록 */}
+      {launchedSatellites.length > 0 && (
+        <div className="launched-list">
+          <div className="launched-header">
+            <span>🛰️ 내 위성 ({launchedSatellites.length})</span>
+            <button onClick={handleClearAllLaunched} title="전체 삭제">🗑️</button>
+          </div>
+          {launchedSatellites.map(sat => (
+            <div key={sat.id} className="launched-item">
+              <span>{sat.name}</span>
+              <span className="launched-alt">{sat.altitude}km</span>
+              <button onClick={() => handleDeleteLaunched(sat.id)}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 발사 시뮬레이터 */}
+      {showLaunchSimulator && (
+        <LaunchSimulator
+          onLaunch={handleLaunch}
+          onClose={() => setShowLaunchSimulator(false)}
+          satellites={visibleSatellites}
+        />
+      )}
+
+      {/* 우주쓰레기 청소 게임 */}
+      {showCleanupGame && (
+        <CleanupGame
+          debris={satellites.filter(s =>
+            s.category === 'debris_cosmos' ||
+            s.category === 'debris_iridium' ||
+            s.category === 'debris_fengyun'
+          ).map(s => {
+            const pos = calculatePosition(s, simulationTime)
+            return pos ? { ...s, position: pos } : null
+          }).filter(Boolean)}
+          onClose={() => setShowCleanupGame(false)}
+          simulationTime={simulationTime}
+        />
+      )}
+
+      {/* 케슬러 신드롬 시뮬레이션 */}
+      {showKessler && (
+        <KesslerSimulation onClose={() => setShowKessler(false)} />
+      )}
+
+      {/* 소행성 추적기 */}
+      {showAsteroid && (
+        <AsteroidTracker onClose={() => setShowAsteroid(false)} />
       )}
     </div>
   )
